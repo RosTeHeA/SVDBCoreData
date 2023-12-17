@@ -7,7 +7,7 @@
 
 import Foundation
 
-public struct Document: Codable, Identifiable {
+public struct Document {
     public let id: UUID
     public let text: String
     public let embedding: [Double]

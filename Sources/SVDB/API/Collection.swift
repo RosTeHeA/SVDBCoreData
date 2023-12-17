@@ -3,109 +3,97 @@
 //
 //
 //  Created by Jordan Howlett on 8/4/23.
+// Adapted for use with CoreData by RosTeHea on 12-16-2023
 //
 
-import Accelerate
-import CoreML
+import CoreData
 import NaturalLanguage
 
 @available(macOS 10.15, *)
 @available(iOS 13.0, *)
 public class Collection {
-    private var documents: [UUID: Document] = [:]
     private let name: String
+    private let context: NSManagedObjectContext
 
-    init(name: String) {
+    init(name: String, context: NSManagedObjectContext) {
         self.name = name
+        self.context = context
     }
 
     public func addDocument(id: UUID? = nil, text: String, embedding: [Double]) {
-        let document = Document(
-            id: id ?? UUID(),
-            text: text,
-            embedding: embedding
-        )
+        let document = SVDBDocument(context: context)
+        document.id = id ?? UUID()
+        document.text = text
+        document.embedding = embedding
 
-        documents[document.id] = document
-        save()
+        saveContext()
     }
 
-    public func addDocuments(_ docs: [Document]) {
-        docs.forEach { documents[$0.id] = $0 }
-        save()
+    public func addDocuments(_ docs: [SVDBDocument]) {
+        docs.forEach { context.insert($0) }
+        saveContext()
     }
 
     public func removeDocument(byId id: UUID) {
-        documents[id] = nil
-        save()
+        let fetchRequest: NSFetchRequest<SVDBDocument> = SVDBDocument.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "id == %@", id as CVarArg)
+
+        do {
+            let results = try context.fetch(fetchRequest)
+            results.forEach { context.delete($0) }
+            saveContext()
+        } catch {
+            print("Failed to remove document: \(error.localizedDescription)")
+        }
     }
 
     public func search(
-        query: [Double],
-        num_results: Int = 10,
-        threshold: Double? = nil
-    ) -> [SearchResult] {
-        let queryMagnitude = sqrt(query.reduce(0) { $0 + $1 * $1 })
+            query: [Double],
+            num_results: Int = 10,
+            threshold: Double? = nil
+        ) -> [SearchResult] {
+            let fetchRequest: NSFetchRequest<SVDBDocument> = SVDBDocument.fetchRequest()
 
-        var similarities: [SearchResult] = []
-        for document in documents.values {
-            let id = document.id
-            let text = document.text
-            let vector = document.embedding
-            let magnitude = sqrt(vector.reduce(0) { $0 + $1 * $1 })
-            let similarity = MathFunctions.cosineSimilarity(query, vector, magnitudeA: queryMagnitude, magnitudeB: magnitude)
+            do {
+                let documents = try context.fetch(fetchRequest)
+                return documents.compactMap { document in
+                    let id = document.id
+                    let text = document.text
+                    let vector = document.embedding
+                    let similarity = calculateCosineSimilarity(query: query, vector: vector)
 
-            if let thresholdValue = threshold, similarity < thresholdValue {
-                continue
+                    if let thresholdValue = threshold, similarity < thresholdValue {
+                        return nil
+                    }
+
+                    return SearchResult(id: id, text: text, score: similarity)
+                }
+                .sorted(by: { $0.score > $1.score })
+                .prefix(num_results)
+                .map { $0 }
+            } catch {
+                print("Search failed: \(error.localizedDescription)")
+                return []
             }
-
-            similarities.append(SearchResult(id: id, text: text, score: similarity))
         }
 
-        return Array(similarities.sorted(by: { $0.score > $1.score }).prefix(num_results))
-    }
+    private func saveContext() {
+         do {
+             try context.save()
+         } catch {
+             print("Failed to save context: \(error.localizedDescription)")
+         }
+     }
 
-    private func save() {
-        let svdbDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.appendingPathComponent("SVDB")
-        try? FileManager.default.createDirectory(at: svdbDirectory, withIntermediateDirectories: true, attributes: nil)
+     public func clear() {
+         let fetchRequest: NSFetchRequest<NSFetchRequestResult> = SVDBDocument.fetchRequest()
+         let deleteRequest = NSBatchDeleteRequest(fetchRequest: fetchRequest)
 
-        let fileURL = svdbDirectory.appendingPathComponent("\(name).json")
-
-        do {
-            let encodedDocuments = try JSONEncoder().encode(documents)
-            let compressedData = try (encodedDocuments as NSData).compressed(using: .zlib)
-            try compressedData.write(to: fileURL)
-        } catch {
-            print("Failed to save documents: \(error.localizedDescription)")
-        }
-    }
-
-    public func load() throws {
-        let svdbDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.appendingPathComponent("SVDB")
-        let fileURL = svdbDirectory.appendingPathComponent("\(name).json")
-
-        // Check if file exists
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            print("File does not exist for collection \(name), initializing with empty documents.")
-            documents = [:]
-            return
-        }
-
-        do {
-            let compressedData = try Data(contentsOf: fileURL)
-
-            let decompressedData = try (compressedData as NSData).decompressed(using: .zlib)
-            documents = try JSONDecoder().decode([UUID: Document].self, from: decompressedData as Data)
-
-            print("Successfully loaded collection: \(name)")
-        } catch {
-            print("Failed to load collection \(name): \(error.localizedDescription)")
-            throw CollectionError.loadFailed(error.localizedDescription)
-        }
-    }
-
-    public func clear() {
-        documents.removeAll()
-        save()
-    }
-}
+         do {
+             try context.execute(deleteRequest)
+             saveContext()
+         } catch {
+             print("Failed to clear documents: \(error.localizedDescription)")
+         }
+     }
+ }

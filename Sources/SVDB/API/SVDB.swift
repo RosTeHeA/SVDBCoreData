@@ -1,5 +1,4 @@
-import Accelerate
-import CoreML
+import CoreData
 import NaturalLanguage
 
 @available(macOS 10.15, *)
@@ -10,15 +9,14 @@ public class SVDB {
 
     private init() {}
 
-    public func collection(_ name: String) throws -> Collection {
-        if collections[name] != nil {
-            throw SVDBError.collectionAlreadyExists
+    public func collection(_ name: String, context: NSManagedObjectContext) throws -> Collection {
+        if let existingCollection = collections[name] {
+            return existingCollection
         }
 
-        let collection = Collection(name: name)
-        collections[name] = collection
-        try collection.load()
-        return collection
+        let newCollection = Collection(name: name, context: context)
+        collections[name] = newCollection
+        return newCollection
     }
 
     public func getCollection(_ name: String) -> Collection? {
